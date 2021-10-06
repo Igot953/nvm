@@ -268,6 +268,31 @@ nvm_install_latest_npm() {
     if [ $NVM_IS_9_3_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 10.0.0; then
       NVM_IS_10_OR_ABOVE=1
     fi
+    local NVM_IS_12_LTS_OR_ABOVE
+    NVM_IS_12_LTS_OR_ABOVE=0
+    if [ $NVM_IS_10_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 12.13.0; then
+      NVM_IS_12_LTS_OR_ABOVE=1
+    fi
+    local NVM_IS_13_OR_ABOVE
+    NVM_IS_13_OR_ABOVE=0
+    if [ $NVM_IS_12_LTS_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 13.0.0; then
+      NVM_IS_13_OR_ABOVE=1
+    fi
+    local NVM_IS_14_LTS_OR_ABOVE
+    NVM_IS_14_LTS_OR_ABOVE=0
+    if [ $NVM_IS_13_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 14.15.0; then
+      NVM_IS_14_LTS_OR_ABOVE=1
+    fi
+    local NVM_IS_15_OR_ABOVE
+    NVM_IS_15_OR_ABOVE=0
+    if [ $NVM_IS_14_LTS_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 15.0.0; then
+      NVM_IS_15_OR_ABOVE=1
+    fi
+    local NVM_IS_16_OR_ABOVE
+    NVM_IS_16_OR_ABOVE=0
+    if [ $NVM_IS_15_OR_ABOVE -eq 1 ] && nvm_version_greater_than_or_equal_to "${NODE_VERSION}" 16.0.0; then
+      NVM_IS_16_OR_ABOVE=1
+    fi
 
     if [ $NVM_IS_4_4_OR_BELOW -eq 1 ] || {
       [ $NVM_IS_5_OR_ABOVE -eq 1 ] && nvm_version_greater 5.10.0 "${NODE_VERSION}"; \
@@ -289,6 +314,13 @@ nvm_install_latest_npm() {
     elif [ $NVM_IS_10_OR_ABOVE -eq 0 ]; then
       nvm_echo '* `npm` `v6.x` is the last version that works on `node` below `v10.0.0`'
       $NVM_NPM_CMD install -g npm@6
+    elif \
+      [ $NVM_IS_12_LTS_OR_ABOVE -eq 0 ] \
+      || { [ $NVM_IS_13_OR_ABOVE -eq 1 ] && [ $NVM_IS_14_LTS_OR_ABOVE -eq 0 ]; } \
+      || { [ $NVM_IS_15_OR_ABOVE -eq 1 ] && [ $NVM_IS_16_OR_ABOVE -eq 0 ]; } \
+    ; then
+      nvm_echo '* `npm` `v7.x` is the last version that works on `node` `v13`, `v15`, below `v12.13`, or `v14.0` - `v14.15`'
+      $NVM_NPM_CMD install -g npm@7
     else
       nvm_echo '* Installing latest `npm`; if this does not work on your node version, please report a bug!'
       $NVM_NPM_CMD install -g npm
@@ -698,13 +730,12 @@ nvm_strip_path() {
     nvm_err '${NVM_DIR} not set!'
     return 1
   fi
-  nvm_echo "${1-}" | command sed \
-    -e "s#${NVM_DIR}/[^/]*${2-}[^:]*:##g" \
-    -e "s#:${NVM_DIR}/[^/]*${2-}[^:]*##g" \
-    -e "s#${NVM_DIR}/[^/]*${2-}[^:]*##g" \
-    -e "s#${NVM_DIR}/versions/[^/]*/[^/]*${2-}[^:]*:##g" \
-    -e "s#:${NVM_DIR}/versions/[^/]*/[^/]*${2-}[^:]*##g" \
-    -e "s#${NVM_DIR}/versions/[^/]*/[^/]*${2-}[^:]*##g"
+  command printf %s "${1-}" | command awk -v NVM_DIR="${NVM_DIR}" -v RS=: '
+  index($0, NVM_DIR) == 1 {
+    path = substr($0, length(NVM_DIR) + 1)
+    if (path ~ "^(/versions/[^/]*)?/[^/]*'"${2-}"'.*$") { next }
+  }
+  { print }' | command paste -s -d: -
 }
 
 nvm_change_path() {
@@ -957,6 +988,7 @@ nvm_list_aliases() {
   NVM_ALIAS_DIR="$(nvm_alias_path)"
   command mkdir -p "${NVM_ALIAS_DIR}/lts"
 
+  nvm_is_zsh && unsetopt local_options nomatch
   (
     local ALIAS_PATH
     for ALIAS_PATH in "${NVM_ALIAS_DIR}/${ALIAS}"*; do
@@ -1395,8 +1427,7 @@ nvm_ls_remote_index_tab() {
   local LTS_ALIAS
   local LTS_VERSION
   command mkdir -p "$(nvm_alias_path)/lts"
-  nvm_echo "${VERSION_LIST}" \
-    | command awk '{
+  { command awk '{
         if ($10 ~ /^\-?$/) { next }
         if ($10 && !a[tolower($10)]++) {
           if (alias) { print alias, version }
@@ -1415,7 +1446,9 @@ nvm_ls_remote_index_tab() {
       LTS_ALIAS="${LTS_ALIAS_LINE%% *}"
       LTS_VERSION="${LTS_ALIAS_LINE#* }"
       nvm_make_alias "${LTS_ALIAS}" "${LTS_VERSION}" >/dev/null 2>&1
-    done
+    done; } << EOF
+$VERSION_LIST
+EOF
 
   VERSIONS="$({ command awk -v lts="${LTS-}" '{
         if (!$1) { next }
@@ -1818,7 +1851,7 @@ nvm_get_arch() {
   esac
 
   # If running a 64bit ARM kernel but a 32bit ARM userland, change ARCH to 32bit ARM (armv7l)
-  L=$(ls -dl /sbin/init) #                                         if /sbin/init is 32bit executable
+  L=$(ls -dl /sbin/init 2>/dev/null) # if /sbin/init is 32bit executable
   if [ "$(uname)" = "Linux" ] && [ "${NVM_ARCH}" = arm64 ] && [ "$(od -An -t x1 -j 4 -N 1 "${L#*-> }")" = ' 01' ]; then
     NVM_ARCH=armv7l
     HOST_ARCH=armv7l
@@ -2454,18 +2487,22 @@ nvm_die_on_prefix() {
   #
   # here, we avoid trying to replicate "which one wins" or testing the value; if any are defined, it errors
   # until none are left.
-  local NVM_NPM_CONFIG_PREFIX_ENV
-  NVM_NPM_CONFIG_PREFIX_ENV="$(command env | nvm_grep -i NPM_CONFIG_PREFIX | command tail -1 | command awk -F '=' '{print $1}')"
-  if [ -n "${NVM_NPM_CONFIG_PREFIX_ENV-}" ]; then
+  local NVM_NPM_CONFIG_x_PREFIX_ENV
+  if [ -n "${BASH_SOURCE-}" ]; then
+    NVM_NPM_CONFIG_x_PREFIX_ENV="$(command set | command awk -F '=' '! /^[0-9A-Z_a-z]+=/ {skip=1} skip==0 {print $1}' | nvm_grep -i NPM_CONFIG_PREFIX | command tail -1)"
+  else
+    NVM_NPM_CONFIG_x_PREFIX_ENV="$(command env | nvm_grep -i NPM_CONFIG_PREFIX | command tail -1 | command awk -F '=' '{print $1}')"
+  fi
+  if [ -n "${NVM_NPM_CONFIG_x_PREFIX_ENV-}" ]; then
     local NVM_CONFIG_VALUE
-    eval "NVM_CONFIG_VALUE=\"\$${NVM_NPM_CONFIG_PREFIX_ENV}\""
+    eval "NVM_CONFIG_VALUE=\"\$${NVM_NPM_CONFIG_x_PREFIX_ENV}\""
     if [ -n "${NVM_CONFIG_VALUE-}" ] && [ "_${NVM_OS}" = "_win" ]; then
       NVM_CONFIG_VALUE="$(cd "$NVM_CONFIG_VALUE" 2>/dev/null && pwd)"
     fi
     if [ -n "${NVM_CONFIG_VALUE-}" ] && ! nvm_tree_contains_path "${NVM_DIR}" "${NVM_CONFIG_VALUE}"; then
       nvm deactivate >/dev/null 2>&1
-      nvm_err "nvm is not compatible with the \"${NVM_NPM_CONFIG_PREFIX_ENV}\" environment variable: currently set to \"${NVM_CONFIG_VALUE}\""
-      nvm_err "Run \`unset ${NVM_NPM_CONFIG_PREFIX_ENV}\` to unset it."
+      nvm_err "nvm is not compatible with the \"${NVM_NPM_CONFIG_x_PREFIX_ENV}\" environment variable: currently set to \"${NVM_CONFIG_VALUE}\""
+      nvm_err "Run \`unset ${NVM_NPM_CONFIG_x_PREFIX_ENV}\` to unset it."
       return 4
     fi
   fi
@@ -2640,7 +2677,7 @@ nvm_cache_dir() {
 }
 
 nvm() {
-  if [ $# -lt 1 ]; then
+  if [ "$#" -lt 1 ]; then
     nvm --help
     return
   fi
@@ -2652,12 +2689,19 @@ nvm() {
     set +e
     local EXIT_CODE
     IFS="${DEFAULT_IFS}" nvm "$@"
-    EXIT_CODE=$?
+    EXIT_CODE="$?"
     set -e
-    return $EXIT_CODE
+    return "$EXIT_CODE"
+  elif [ "${-#*a}" != "$-" ]; then
+    set +a
+    local EXIT_CODE
+    IFS="${DEFAULT_IFS}" nvm "$@"
+    EXIT_CODE="$?"
+    set -a
+    return "$EXIT_CODE"
   elif [ "${IFS}" != "${DEFAULT_IFS}" ]; then
     IFS="${DEFAULT_IFS}" nvm "$@"
-    return $?
+    return "$?"
   fi
 
   local i
@@ -3976,7 +4020,10 @@ nvm() {
           for LINK in ${LINKS}; do
             set +f; unset IFS # restore variable expansion
             if [ -n "${LINK}" ]; then
-              (nvm_cd "${LINK}" && npm link)
+              case "${LINK}" in
+                '/'*) (nvm_cd "${LINK}" && npm link) ;;
+                *) (nvm_cd "$(npm root -g)/../${LINK}" && npm link)
+              esac
             fi
           done
         )
@@ -4227,7 +4274,7 @@ nvm_auto() {
 nvm_process_parameters() {
   local NVM_AUTO_MODE
   NVM_AUTO_MODE='use'
-  while [ $# -ne 0 ]; do
+  while [ "$#" -ne 0 ]; do
     case "$1" in
       --install) NVM_AUTO_MODE='install' ;;
       --no-use) NVM_AUTO_MODE='none' ;;
